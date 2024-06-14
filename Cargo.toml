@@ -1,0 +1,9 @@
+[package]
+name = "basestation-to-fsd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+bus = { version = "2.4.1"}
+crossbeam-channel = {version = "0.5.13"}
