@@ -1,31 +1,32 @@
 use std::error::Error;
 use std::net::SocketAddr;
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpListener, TcpStream};
+use tokio::sync::watch::{channel, Receiver, Sender};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     const SBS_ADDRESS: &'static str = "vrs-hub.thehellnet.org:41009";
-    println!("bus initialized");
+    let (tx, rx) = channel(String::new());
 
-    let (sender, receiver) = unbounded();
-
-    tokio::spawn(async move {
-        if let Err(e) = connect_to_feed(SBS_ADDRESS.to_string(), sender).await {
-            eprintln!("Error connecting to feed: {:?}", e);
+    tokio::spawn({
+        let tx = tx.clone();
+        async move {
+            if let Err(e) = connect_to_feed(SBS_ADDRESS.to_string(), tx).await {
+                eprintln!("Error connecting to feed: {:?}", e);
+            }
         }
     });
 
     let listener = TcpListener::bind("127.0.0.1:1234").await?;
 
     loop {
-        let r = receiver.clone();
         let (socket, _) = listener.accept().await?;
+        let rx = rx.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, r).await {
+            if let Err(e) = handle_client(socket, rx).await {
                 eprintln!("Receiver disconnected: {:?}", e);
             }
         });
@@ -48,15 +49,13 @@ async fn connect_to_feed(
     let socket_addr = resolve(sbs_address).await?;
 
     let mut stream = TcpStream::connect(socket_addr).await?;
-    let mut buffer = [0; 1024];
+    let mut buffer_data = [0; 1024];
 
     loop {
-        let n = stream.read(&mut buffer).await?;
-        if n == 0 {
-            break; // Connection closed
-        }
-        let message = String::from_utf8_lossy(&buffer[..n]).to_string();
-        sender.send(message)?
+        let n = stream.read(&mut buffer_data).await?;
+        if n == 0 { break; }
+        let message = String::from_utf8_lossy(&buffer_data[..n]).to_string();
+        let _ = sender.send(message);
     }
 
     Ok(())
@@ -64,18 +63,17 @@ async fn connect_to_feed(
 
 async fn handle_client(
     mut socket: TcpStream,
-    receiver: Receiver<String>,
+    mut receiver: Receiver<String>,
 ) -> Result<(), Box<dyn Error>> {
-    println!("client connected {:?}", socket.peer_addr()?);
+    println!("Client connected {:?}", socket.peer_addr()?);
+
     loop {
-        match receiver.recv() {
-            Ok(message) => {
-                socket.write_all(message.as_ref()).await?;
-            }
-            Err(e) => {
-                eprintln!("Error receiving from bus: {:?}", e);
-                break;
-            }
+        receiver.changed().await?;
+
+        let message = receiver.borrow_and_update().clone();
+        if let Err(e) = socket.write_all(message.as_ref()).await {
+            eprintln!("Error sending to client: {:?}", e);
+            break;
         }
     }
 
