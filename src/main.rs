@@ -1,9 +1,10 @@
 use std::error::Error;
-use std::net::SocketAddr;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{lookup_host, TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch::{channel, Receiver, Sender};
+
+mod utils;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -19,13 +20,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let listener = TcpListener::bind("127.0.0.1:1234").await?;
+    let listener = TcpListener::bind("127.0.0.1:6809").await?;
 
     loop {
         let (socket, _) = listener.accept().await?;
         let rx = rx.clone();
 
-        tokio::spawn(async move {
+        tokio::spawn(async {
             if let Err(e) = handle_client(socket, rx).await {
                 eprintln!("Receiver disconnected: {:?}", e);
             }
@@ -33,20 +34,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn resolve(address: String) -> Result<SocketAddr, Box<dyn Error>> {
-    let mut addrs = lookup_host(address).await?;
-    if let Some(socket_addr) = addrs.next() {
-        Ok(socket_addr)
-    } else {
-        Err("Could not resolve address".into())
-    }
-}
-
 async fn connect_to_feed(
     sbs_address: String,
     sender: Sender<String>,
 ) -> Result<(), Box<dyn Error>> {
-    let socket_addr = resolve(sbs_address).await?;
+    let socket_addr = utils::resolve(sbs_address).await?;
 
     let mut stream = TcpStream::connect(socket_addr).await?;
     let mut buffer_data = [0; 1024];
@@ -66,6 +58,13 @@ async fn handle_client(
     mut receiver: Receiver<String>,
 ) -> Result<(), Box<dyn Error>> {
     println!("Client connected {:?}", socket.peer_addr()?);
+
+    let mut buffer_data = [0; 1024];
+    let n = socket.read(&mut buffer_data).await?;
+    let message = String::from_utf8_lossy(&buffer_data[..n]).to_string();
+    println!("{}", message);
+    socket.write_all("#TMSERVER:IT-SOA1:Welcome to the proxy, we've got fun and games\n".as_ref()).await?;
+
 
     loop {
         receiver.changed().await?;
