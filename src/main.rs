@@ -4,7 +4,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch::{channel, Receiver, Sender};
 
+use fsd::FSDMessage;
 mod utils;
+mod fsd;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -61,20 +63,25 @@ async fn handle_client(
 
     let mut buffer_data = [0; 1024];
     let n = socket.read(&mut buffer_data).await?;
-    let message = String::from_utf8_lossy(&buffer_data[..n]).to_string();
-    println!("{}", message);
-    socket.write_all("#TMSERVER:IT-SOA1:Welcome to the proxy, we've got fun and games\n".as_ref()).await?;
+    let message = FSDMessage::from_string(String::from_utf8_lossy(&buffer_data[..n]).to_string())?;
+    println!("{:?}", message);
+    match message {
+        FSDMessage::LoginRequest(login_request) => {
+            socket.write_all(FSDMessage::LoginResponse(login_request.to_response()).to_bytes().as_slice()).await?;
 
+            loop {
+                receiver.changed().await?;
 
-    loop {
-        receiver.changed().await?;
-
-        let message = receiver.borrow_and_update().clone();
-        if let Err(e) = socket.write_all(message.as_ref()).await {
-            eprintln!("Error sending to client: {:?}", e);
-            break;
+                let message = receiver.borrow_and_update().clone();
+                if let Err(e) = socket.write_all(message.as_ref()).await {
+                    eprintln!("Error sending to client: {:?}", e);
+                    break;
+                }
+            }
         }
+        _ => {}
     }
+
 
     Ok(())
 }
